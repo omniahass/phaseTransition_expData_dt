@@ -39,36 +39,8 @@ These were latent in the inherited code — most only surfaced because the pipel
 | The bundled NIfTI toolbox called a helper file that is not in the folder, and had no .gz support | Step 6 failed twice more — first no reader, then mangled .nii.gz filenames |
 | resample\_roi.py named its output from the segmentation filename rather than the subject folder | Downstream steps look it up by subject name — a mismatch would break steps 6 and 7 |
 
-**The DTI fitting step had to be rewritten**
-
-This is the one substantive change to the science code, so it is worth explaining properly.
-
-The MATLAB tensor fitting depends on two compiled helper files, mex\_wls and mex\_dti\_eig. Both exist only as macOS binaries, and the C source is nowhere in the repository — so step 4 simply could not run on a Linux machine. I asked around the lab; the consensus was that this class is outdated and there are current alternatives.
-
-## **Why not just use MRtrix**
-
-MRtrix’s dwi2tensor and dipy both accept a gradient table only — a direction plus a scalar b-value. Our pipeline runs a dedicated step to pull the scanner’s effective b-matrix out of the DICOM headers, including the off-diagonal cross terms, and the MATLAB fit used all six elements. Switching to either tool would mean discarding the very thing that earlier step exists to produce.
-
-So I reimplemented the fit directly in Python, matching the original settings exactly: the same neighbourhood smoothing, the same dropping of the leading and trailing b0, the same full b-matrix design, weighted linear least squares with one reweighting step, eigenvalues sorted descending, and the same scaling and clipping of the output maps.
-
-## **How it was checked**
-
-| Test | Agreement |
-| :---- | :---- |
-| Known tensor recovered through the real b-matrix | 3 x 10^-14 um^2/ms |
-| Eigenvalues against a direct decomposition | 3 x 10^-17 |
-| Smoothing against a literal transcription of the MATLAB loop | 2 x 10^-16 (1 ulp) |
-| Which neighbouring voxels the smoothing selects | identical |
-
-## 
-
-In other words, the two implementations agree to the limits of floating-point arithmetic on synthetic data. That was enough to justify the rewrite, but not to trust it — synthetic tensors are well conditioned and real data is not. The comparison on a real case is the next section.
-
-## **Both versions are now available**
-
-The C++ sources for the two MEX files turned up and have been compiled on the cluster, so the MATLAB fit runs there too. The pipeline wrapper carries a dti\_method setting — "python" or "matlab" — that switches step 4 between them, including which tools preflight checks for. Nothing else in the pipeline changes.
-
-Keeping both is what made the validation below possible, and it means the MEX dependency is no longer a single point of failure.
+**The DTI fitting step in MATLAB vs. Python implementation*
+The MATLAB tensor fitting depends on two compiled helper files, mex\_wls and mex\_dti\_eig. The C++ sources for the two MEX files turned up and have been compiled on the server, so the MATLAB fit runs there too. The pipeline wrapper carries a dti\_method setting — "python" or "matlab" — that switches step 4 between them, including which tools preflight checks for. Nothing else in the pipeline changes.
 
 **Validation: the two implementations on a real case**
 
@@ -98,13 +70,11 @@ The Python version implements this directly with numpy. The MATLAB version reach
 
 ## **Outlier rejection is not enabled — in either version**
 
-The DTI class offers four outlier-detection methods. The inherited script calls one of them and then never passes the result to the fit, so it is computed and discarded; every volume is used. The Python version does not implement outlier rejection at all, which keeps the two consistent.
-
-Turning it on is an open analysis decision rather than a fix: it would change the numbers, the four methods reject different volumes, and anything already processed would need reprocessing to stay comparable.
+The DTI class offers four outlier-detection methods. The inherited script calls one of them and then never passes the result to the fit, so it is computed and discarded; every volume is used. The Python version does not implement outlier rejection at all. Both implementations are consistent for now
 
 **Reproducibility: what could differ from Gabrielle’s results**
 
-Ordered by how much I would want to check them before trusting a number.
+Ordered by how much I would want to check them:
 
 **The pipeline as a whole has not been compared against her outputs   \[CHECK FIRST\]**
 
@@ -113,10 +83,6 @@ Step 4 is now validated against the original MATLAB implementation, but that onl
 **The brain-masking flag was changed   \[CHECK FIRST\]**
 
 The original called SynthStrip with a \-t 1 flag that FreeSurfer 7.4.1 rejects outright, so no mask was produced and everything downstream failed. In versions that accept it, \-t sets the thread count and has no effect on the mask — but I cannot confirm which version she used. This mask feeds every eddy correction, so it is worth verifying visually.
-
-**Tensor fitting moved from MATLAB to Python   \[VALIDATED\]**
-
-Both implementations now run, and the same case was processed through each. AD and RD agree to 10^-14; FA differs only in voxels where it is undefined. See the validation section above.
 
 **Tool versions on the cluster differ from her Mac   \[UNKNOWN\]**
 
