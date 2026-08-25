@@ -62,23 +62,61 @@ So I reimplemented the fit directly in Python, matching the original settings ex
 
 ## 
 
-In other words, the two implementations agree to the limits of floating-point arithmetic on synthetic data. They have not been compared on a real case — see below.
+In other words, the two implementations agree to the limits of floating-point arithmetic on synthetic data. That was enough to justify the rewrite, but not to trust it — synthetic tensors are well conditioned and real data is not. The comparison on a real case is the next section.
+
+## **Both versions are now available**
+
+The C++ sources for the two MEX files turned up and have been compiled on the cluster, so the MATLAB fit runs there too. The pipeline wrapper carries a dti\_method setting — "python" or "matlab" — that switches step 4 between them, including which tools preflight checks for. Nothing else in the pipeline changes.
+
+Keeping both is what made the validation below possible, and it means the MEX dependency is no longer a single point of failure.
+
+**Validation: the two implementations on a real case**
+
+WCMyofascial2075 was processed through step 4 twice — once with the Python fit, once with the MATLAB one — with every other stage of the pipeline held identical. The resulting maps were compared voxel by voxel, and the per-ROI values recomputed from each.
+
+| Map | Largest change in any reported ROI value | Verdict |
+| :---- | :---- | :---- |
+| AD | 2.0 x 10^-14 | Identical — floating-point rounding only |
+| RD | 2.0 x 10^-14 | Identical — floating-point rounding only |
+| FA | 2.8 x 10^-3 (~1%) | Confined to voxels where FA is undefined |
+
+Across all five diffusion times and all four ROIs. **AD and RD — the two parameters we report — are identical.** A difference of 10^-14 on values around 1.9 is the last bit of a double-precision number.
+
+## **Where the FA difference comes from**
+
+43 of the 11,856 ROI voxels (0.36%) have all three eigenvalues equal to zero — no signal at all. FA is a ratio, so in those voxels it evaluates to zero divided by zero, and the two implementations return different arbitrary values. Everywhere the tensor is actually defined, they agree to 10^-11 or better.
+
+The larger disagreement outside the ROI (around 8% of non-zero voxels) is the same effect in image background. The 5–95 percentile trimming already applied when ROI values are computed absorbs most of it, which is why a 0.36% voxel population moves the reported FA by only about 1%.
+
+Those 43 zero-signal voxels sit *inside* the segmentation. That is not a fitting problem — it means the ROI includes voxels with no data, most likely where it extends past the imaged slab or into a region zeroed during eddy correction. Small enough not to affect the numbers materially, but worth checking when the masks are reviewed.
+
+## **What the fit actually does**
+
+Both implementations follow the same sequence: neighbourhood smoothing over a 3x3x3 kernel keeping the three most similar voxels; the leading and trailing b0 volumes dropped along with their b-matrix rows; a design matrix built from all six b-matrix elements including the cross terms; an unweighted linear fit followed by one weighted reweighting step using the predicted signal as weights; eigenvalues sorted descending; diffusivities scaled by 1000 and clipped to \[0, 3.5\], with FA left unscaled.
+
+The Python version implements this directly with numpy. The MATLAB version reaches it through the DTI class with the wlls estimator, which calls the two compiled helpers for the weighted solve and the eigendecomposition.
+
+## **Outlier rejection is not enabled — in either version**
+
+The DTI class offers four outlier-detection methods. The inherited script calls one of them and then never passes the result to the fit, so it is computed and discarded; every volume is used. The Python version does not implement outlier rejection at all, which keeps the two consistent.
+
+Turning it on is an open analysis decision rather than a fix: it would change the numbers, the four methods reject different volumes, and anything already processed would need reprocessing to stay comparable.
 
 **Reproducibility: what could differ from Gabrielle’s results**
 
 Ordered by how much I would want to check them before trusting a number.
 
-**Nothing has been validated against a known-good case   \[CHECK FIRST\]**
+**The pipeline as a whole has not been compared against her outputs   \[CHECK FIRST\]**
 
-The pipeline runs end to end and produces plausible output, but no case has been processed both ways and compared. Gabrielle already processed the full WCMyofascial cohort, so a direct comparison is available and is the obvious next step.
+Step 4 is now validated against the original MATLAB implementation, but that only covers the tensor fit. The stages around it — preprocessing, registration, RPBM, ROI readout — have not been compared against the results Gabrielle already produced for the WCMyofascial cohort. That comparison is available and remains the obvious next step.
 
 **The brain-masking flag was changed   \[CHECK FIRST\]**
 
 The original called SynthStrip with a \-t 1 flag that FreeSurfer 7.4.1 rejects outright, so no mask was produced and everything downstream failed. In versions that accept it, \-t sets the thread count and has no effect on the mask — but I cannot confirm which version she used. This mask feeds every eddy correction, so it is worth verifying visually.
 
-**Tensor fitting moved from MATLAB to Python   \[VERIFY ON REAL DATA\]**
+**Tensor fitting moved from MATLAB to Python   \[VALIDATED\]**
 
-Verified equivalent to machine precision on synthetic data, but never compared against her actual maps. This would be settled by the same validation run.
+Both implementations now run, and the same case was processed through each. AD and RD agree to 10^-14; FA differs only in voxels where it is undefined. See the validation section above.
 
 **Tool versions on the cluster differ from her Mac   \[UNKNOWN\]**
 
@@ -118,7 +156,7 @@ Every processing parameter was checked against the originals and is byte-for-byt
 
 Roughly in the order I would tackle them.
 
-1. **Run a validation case.** Process one already-published WCMyofascial subject and compare maps and ROI values against Gabrielle’s. This settles most of the reproducibility questions above at once.
+1. **Compare the full pipeline against her published results.** Step 4 is validated; the surrounding stages are not. Processing one already-published WCMyofascial subject and comparing final ROI values would settle the remaining reproducibility questions at once.
 
 2. **A slope inconsistency in the ROI step.** A condition that can never be true means the diffusivity-versus-time slopes are fit on unregistered maps, while the RPBM step and the ROI readout in the same notebook both use registered ones. One-line fix, but it changes the numbers, so I have not applied it unilaterally.
 
