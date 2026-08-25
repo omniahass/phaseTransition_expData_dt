@@ -2,7 +2,7 @@
 
 **Starting Point**
 
-*Six scripts that had to be run by hand, one at a time, on one particular Mac. Gabrielle walked me through the code before her leave. What I inherited was six scripts across three languages — bash, MATLAB and Jupyter — each run manually in sequence, and each carrying a hard-coded absolute path to a subject folder on her own machine. Processing a case meant editing six files by hand and remembering the order. There were no checks between stages, so a step that failed halfway through would leave partial outputs, and the next step would consume them without complaint. None of it had been run outside macOS.*
+*Six scripts that had to be run manually one at a time, on one particular Mac, across three languages (bash, MATLAB and Jupyter). each script carried a hard-coded absolute path to a subject folder. Processing a case meant editing six files by hand and remembering the order. There were no checks between stages, so a step that failed halfway through would leave partial outputs, and the next step would consume them without complaint. None of it had been run outside macOS.*
 
 **Changes Made**
 
