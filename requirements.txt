@@ -1,0 +1,10 @@
+# python packages for the HEAL pipeline (see run_heal_pipeline.sh)
+numpy==2.3.5
+pydicom==3.0.1     # step 1 - bmatrix_export.py, rename_folders.py
+SimpleITK          # step 3 - resample_roi.py
+antspyx            # step 5 - heal_maps_registration_singlecase.ipynb
+nibabel            # step 7 - read_roi_values_singlecase.ipynb
+dipy               # step 7
+scipy              # step 7
+pandas             # step 7
+jupyter            # steps 5 and 7 are run with jupyter nbconvert
