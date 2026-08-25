@@ -39,7 +39,7 @@ These were latent in the inherited code — most only surfaced because the pipel
 | The bundled NIfTI toolbox called a helper file that is not in the folder, and had no .gz support | Step 6 failed twice more — first no reader, then mangled .nii.gz filenames |
 | resample\_roi.py named its output from the segmentation filename rather than the subject folder | Downstream steps look it up by subject name — a mismatch would break steps 6 and 7 |
 
-**The DTI fitting step in MATLAB vs. Python implementation*
+**The DTI fitting step in MATLAB vs. Python implementation**
 The MATLAB tensor fitting depends on two compiled helper files, mex\_wls and mex\_dti\_eig. The C++ sources for the two MEX files turned up and have been compiled on the server, so the MATLAB fit runs there too. The pipeline wrapper carries a dti\_method setting — "python" or "matlab" — that switches step 4 between them, including which tools preflight checks for. Nothing else in the pipeline changes.
 
 **Validation: the two implementations on a real case**
