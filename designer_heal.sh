@@ -28,7 +28,7 @@ echo "  > Magnitude denoising"
 rm -rf $dpath/magdn
 docker run --platform linux/amd64 -it \
     -v "$dataDir:/data" \
-    nyudiffusionmri/designer2:main \
+    nyudiffusionmri/designer2:v2.0.16 \
     designer -denoise -shrinkage frob -extent 5,5,5 -nthreads 24 -nocleanup \
     -scratch /data/derivatives/all/magdn \
     "$all_img_paths" \
@@ -141,7 +141,9 @@ for delta in "${deltas[@]}"; do
     echo "Running topup"
     topup --imain=b0_pair_topup.nii --datain=topup_acqp.txt --config=b02b0.cnf --scale=1 --out=topup_results --iout=topup_results.nii.gz
     mrmath -force topup_results.nii.gz mean topup_corrected_mean.nii -axis 3
-    mri_synthstrip -i topup_corrected_mean.nii -o topup_corrected_brain.nii.gz  -m topup_corrected_brain_mask.nii.gz -t 1
+    # CHANGED FOR WRAPPER: "-t 1" (thread count) is not accepted by FreeSurfer 7.4.1
+    # and made synthstrip exit without writing the mask, which broke every eddy call
+    mri_synthstrip -i topup_corrected_mean.nii -o topup_corrected_brain.nii.gz -m topup_corrected_brain_mask.nii.gz
 
     echo "Running eddy $delta"
     name=${delta}_dg 

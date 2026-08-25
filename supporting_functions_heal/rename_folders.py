@@ -18,7 +18,9 @@ def main():
     for item in os.listdir(input_folder):
         src = os.path.join(input_folder, item)
         dst = os.path.join(dicom_folder, item)
-        if os.path.isdir(src) and src != dicom_folder:
+        # CHANGED FOR WRAPPER: only move DICOM series folders. Moving everything
+        # swallowed pipeline folders (logs, nifti, derivatives, maps) on a re-run
+        if os.path.isdir(src) and src != dicom_folder and "SER" in item:
             if not os.path.exists(dst):
                 shutil.move(src, dicom_folder)
 

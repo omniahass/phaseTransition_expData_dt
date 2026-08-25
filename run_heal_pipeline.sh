@@ -12,7 +12,7 @@
 #   1  heal_pipeline.sh                          dicom clean up -> nifti + bmatrix
 #   2  designer_heal.sh                          denoise, degibbs, topup, eddy
 #   3  resample_roi.py                           segmentation -> dwi space ROI
-#   4  dti_mapping_jelle_singlecase.m            DTI maps per diffusion time
+#   4  dti_mapping_singlecase.py  /  .m           DTI maps per diffusion time
 #   5  heal_maps_registration_singlecase.ipynb   register maps within scan
 #   6  rpbm_bayesian_singlecase.m                RPBM a / kappa maps
 #   7  read_roi_values_singlecase.ipynb          slopes + ROI values -> csv
@@ -28,9 +28,38 @@ segmentation_filename="WCMyofascial2075.nii.gz"
 center="cornell"
 steps="1234567"                 # which steps to run, e.g. "1234567", "45", "7"
 
-python_bin="python3"
-jupyter_bin="jupyter"
-matlab_bin="/Applications/MATLAB_R2025b.app/bin/matlab"
+# Which DTI fitting to use in step 4:
+#   "python" - dti_mapping_singlecase.py, no MEX files needed
+#   "matlab" - dti_mapping_jelle_singlecase.m, needs mex_wls and mex_dti_eig
+#              compiled for this platform (see check_mex below)
+dti_method="matlab"
+
+# Preflight and between-step checks: "y" stops the run as soon as something is
+# missing, "n" reports everything and carries on anyway (the steps that need the
+# missing piece will fail on their own)
+stop_on_missing="n"
+
+# Environment modules to load before anything runs, space separated ("" = none)
+modules_to_load="freesurfer/7.4.1"
+
+# /home is full on this cluster, so tool preferences and caches are pointed here
+# instead. Set to "" to leave them in the home directory.
+# NOTE: must be a LOCAL disk. The /mnt/* shares are CIFS and reject the chmod
+# style operations these tools need, so /tmp is the only workable spot here.
+tool_home="/tmp/heal_tool_home"
+
+# One interpreter is used for the python scripts AND for running the notebooks,
+# so a notebook can never execute in a different env from the one checked here
+#python_bin="python3"
+python_bin="/apps/fsl/bin/python3"
+
+# Folder holding the few packages FSL's python is missing (antspyx, dipy).
+# Installed with:  python3 -m pip install --target=<this folder> antspyx dipy
+extra_python_libs="/tmp/heal_libs"
+matlab_bin="/apps/MATLAB/R2025a/bin/matlab"
+#matlab_bin="/Applications/MATLAB_R2025b.app/bin/matlab" #my local matlab
+
+
 # ===============================================================================
 
 # Command line arguments override the settings above
@@ -62,12 +91,22 @@ fail() { echo "[$(date '+%H:%M:%S')] ERROR: $*" | tee -a "$log_file"; exit 1; }
 
 do_step() { [[ "$steps" == *"$1"* ]]; }
 
+problems=0
+check_fail() { # honour stop_on_missing
+    problems=$((problems+1))
+    if [ "$stop_on_missing" = "y" ]; then
+        fail "$1"
+    else
+        warn "$1"
+    fi
+}
+
 # Debugging checks - fail early with the exact path that is missing
 check_file() {
     if [ -s "$1" ]; then
         msg "  ok       $1"
     else
-        fail "missing or empty file: $1"
+        check_fail "missing or empty file: $1"
     fi
 }
 
@@ -75,7 +114,7 @@ check_dir() {
     if [ -d "$1" ]; then
         msg "  ok       $1"
     else
-        fail "missing folder: $1"
+        check_fail "missing folder: $1"
     fi
 }
 
@@ -85,7 +124,7 @@ check_glob() { # check_glob <pattern> <expected count>
     if [ "$n" -ge "$2" ]; then
         msg "  ok       $n file(s) matching $1"
     else
-        fail "expected at least $2 file(s) matching $1, found $n"
+        check_fail "expected at least $2 file(s) matching $1, found $n"
     fi
 }
 
@@ -127,7 +166,7 @@ run_step() { # run_step <number> <name> <command...>
 }
 
 run_notebook() {
-    "$jupyter_bin" nbconvert --to notebook --execute \
+    "$python_bin" -m jupyter nbconvert --to notebook --execute \
         --ExecutePreprocessor.timeout=-1 \
         --output-dir "$log_dir" \
         --output "$(basename "${1%.ipynb}")_executed.ipynb" \
@@ -138,20 +177,24 @@ run_matlab() {
     "$matlab_bin" -sd "$script_dir" -batch "$1"
 }
 
-# DTI.m calls mex_wls and mex_dti_eig directly, with no pure MATLAB fallback, so the
-# compiled binaries have to match the architecture of the installed MATLAB
+# DTI.m calls mex_wls and mex_dti_eig directly, with no pure MATLAB fallback, so
+# the compiled binaries have to match the architecture of the installed MATLAB.
+# The .cpp sources are in supporting_functions_dti - build them from MATLAB with:
+#   mex -lmwlapack mex_wls.cpp
+#   mex -lmwlapack mex_dti_eig.cpp
 check_mex() {
     local matlab_root arch have
     matlab_root="$(dirname "$(dirname "$matlab_bin")")"
     if   [ -d "$matlab_root/bin/glnxa64" ]; then arch="mexa64"      # linux cluster
     elif [ -d "$matlab_root/bin/maca64"  ]; then arch="mexmaca64"   # apple silicon
-    else                                        arch="mexmaci64"   # intel mac
+    else                                        arch="mexmaci64"    # intel mac
     fi
     for m in mex_wls mex_dti_eig; do
         if [ -f "$script_dir/supporting_functions_dti/${m}.${arch}" ]; then
             msg "  ok       supporting_functions_dti/${m}.${arch}"
         else
-            have=$(ls "$script_dir"/supporting_functions_dti/${m}.mex* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
+            have=$(ls "$script_dir"/supporting_functions_dti/${m}.mex* 2>/dev/null \
+                   | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
             missing_cmds+=("supporting_functions_dti/${m}.${arch}  (MATLAB is ${arch}, this folder has: ${have:-nothing})")
         fi
     done
@@ -180,6 +223,58 @@ msg " steps          : $steps"
 msg " script folder  : $script_dir"
 msg " log file       : $log_file"
 
+# Make the extra packages importable without touching FSL's own install
+if [ -n "$extra_python_libs" ]; then
+    export PYTHONPATH="$extra_python_libs${PYTHONPATH:+:$PYTHONPATH}"
+    [ -d "$extra_python_libs" ] || warn "extra_python_libs is missing: $extra_python_libs
+             /tmp may have been cleared - reinstall with:
+             $python_bin -m pip install --no-cache-dir --target=$extra_python_libs antspyx dipy"
+fi
+
+# --------------------- keep tools off a full home directory ---------------------
+# MATLAB, jupyter, pip and matplotlib all write into $HOME by default and fail
+# when it is full, usually with an error that says nothing about disk space
+if [ -n "$tool_home" ]; then
+    mkdir -p "$tool_home"/{matlab,jupyter,ipython,pip,cache,config,data,mpl} \
+        || fail "cannot write to tool_home: $tool_home"
+    export MATLAB_PREFDIR="$tool_home/matlab"
+    export JUPYTER_RUNTIME_DIR="$tool_home/jupyter/runtime"
+    export JUPYTER_DATA_DIR="$tool_home/jupyter/data"
+    export JUPYTER_CONFIG_DIR="$tool_home/jupyter/config"
+    export IPYTHONDIR="$tool_home/ipython"   # else the kernel writes ~/.ipython
+    export PIP_CACHE_DIR="$tool_home/pip"
+    export XDG_CACHE_HOME="$tool_home/cache"
+    export XDG_CONFIG_HOME="$tool_home/config"
+    export XDG_DATA_HOME="$tool_home/data"
+    export MPLCONFIGDIR="$tool_home/mpl"
+    msg " tool caches    : $tool_home"
+fi
+
+# --------------------------- environment modules -------------------------------
+# "module" is a shell function, so on a cluster its init script has to be sourced
+# before the function exists in a non-interactive shell
+if [ -n "$modules_to_load" ]; then
+    if ! command -v module >/dev/null 2>&1; then
+        for init in /usr/share/modules/init/bash /etc/profile.d/modules.sh \
+                    /usr/share/lmod/lmod/init/bash; do
+            [ -f "$init" ] && . "$init" && break
+        done
+    fi
+    if command -v module >/dev/null 2>&1; then
+        for m in $modules_to_load; do
+            module load "$m" >/dev/null 2>&1 && msg " loaded module $m" \
+                                             || warn "could not load module $m"
+        done
+    else
+        warn "modules_to_load is set but 'module' is not available here"
+    fi
+fi
+
+# FreeSurfer only puts mri_synthstrip on the PATH once its setup script is sourced
+if [ -n "$FREESURFER_HOME" ] && ! command -v mri_synthstrip >/dev/null 2>&1; then
+    [ -f "$FREESURFER_HOME/SetUpFreeSurfer.sh" ] && . "$FREESURFER_HOME/SetUpFreeSurfer.sh" >/dev/null 2>&1
+fi
+
 # ------------------------- preflight: tools and inputs -------------------------
 msg ""
 msg "--- preflight checks ---"
@@ -189,22 +284,34 @@ do_step 1 && { need_cmd "$python_bin"; need_cmd dcm2niix; need_pymod pydicom; ne
 do_step 2 && { need_cmd docker; need_cmd mrinfo; need_cmd mrconvert; need_cmd mrcat
                need_cmd mrmath; need_cmd topup; need_cmd eddy; need_cmd mri_synthstrip; }
 do_step 3 && { need_cmd "$python_bin"; need_pymod SimpleITK; }
-do_step 4 && { need_bin "$matlab_bin"; check_mex; check_toolboxes; }
-do_step 5 && { need_cmd "$jupyter_bin"; need_pymod ants; }
+if do_step 4; then
+    if [ "$dti_method" = "matlab" ]; then
+        need_bin "$matlab_bin"; check_mex; check_toolboxes
+    else
+        need_cmd "$python_bin"; need_pymod numpy; need_pymod nibabel
+    fi
+fi
+do_step 5 && { need_pymod nbconvert; need_pymod ants; }
 do_step 6 && { need_bin "$matlab_bin"; check_toolboxes; }
-do_step 7 && { need_cmd "$jupyter_bin"; need_pymod nibabel; need_pymod dipy
+do_step 7 && { need_pymod nbconvert; need_pymod nibabel; need_pymod dipy
                need_pymod scipy; need_pymod pandas; }
 
 if [ ${#missing_cmds[@]} -gt 0 ]; then
     for c in "${missing_cmds[@]}"; do echo "  MISSING  $c" | tee -a "$log_file"; done
-    fail "${#missing_cmds[@]} required tool(s) not found - fix the paths at the top of this script or source your FSL / conda setup"
+    check_fail "${#missing_cmds[@]} required tool(s) not found - fix the paths at the top of this script or source your FSL / conda setup"
 fi
 
 # scripts this run needs
 do_step 1 && check_file "$script_dir/heal_pipeline.sh"
 do_step 2 && check_file "$script_dir/designer_heal.sh"
 do_step 3 && check_file "$script_dir/resample_roi.py"
-do_step 4 && check_file "$script_dir/dti_mapping_jelle_singlecase.m"
+if do_step 4; then
+    if [ "$dti_method" = "matlab" ]; then
+        check_file "$script_dir/dti_mapping_jelle_singlecase.m"
+    else
+        check_file "$script_dir/dti_mapping_singlecase.py"
+    fi
+fi
 do_step 5 && check_file "$script_dir/heal_maps_registration_singlecase.ipynb"
 do_step 6 && check_file "$script_dir/rpbm_bayesian_singlecase.m"
 do_step 7 && check_file "$script_dir/read_roi_values_singlecase.ipynb"
@@ -212,7 +319,7 @@ do_step 7 && check_file "$script_dir/read_roi_values_singlecase.ipynb"
 # input data
 do_step 1 && check_dir "$parent_path/sorted_dcms"
 if do_step 2; then
-    docker info >/dev/null 2>&1 || fail "docker is not running - designer2 needs it"
+    docker info >/dev/null 2>&1 || check_fail "docker is not usable here - designer2 needs it"
     msg "  ok       docker daemon is running"
 fi
 
@@ -295,7 +402,11 @@ if do_step 4; then
         check_file "$parent_path/bmatrix/${d}.txt"
     done
 
-    run_step 4 "DTI mapping (MATLAB)" run_matlab dti_mapping_jelle_singlecase
+    if [ "$dti_method" = "matlab" ]; then
+        run_step 4 "DTI mapping (MATLAB)" run_matlab dti_mapping_jelle_singlecase
+    else
+        run_step 4 "DTI mapping (python)" "$python_bin" ./dti_mapping_singlecase.py
+    fi
 
     msg "--- checking step 4 output ---"
     for d in "${deltas[@]}"; do
@@ -373,5 +484,6 @@ fi
 msg ""
 msg "=============================================================="
 msg " pipeline finished - steps $steps for $subject"
+[ "$problems" -gt 0 ] && msg " $problems check(s) reported a problem - search the log for WARNING"
 msg " log: $log_file"
 msg "=============================================================="

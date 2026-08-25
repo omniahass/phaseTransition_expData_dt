@@ -60,6 +60,16 @@ function nii = load_untouch_nii(filename, img_idx, dim5_idx, dim6_idx, dim7_idx)
       error('Usage: nii = load_untouch_nii(filename, [img_idx], [dim5_idx], [dim6_idx], [dim7_idx])');
    end
 
+   %  CHANGED FOR WRAPPER: this copy had no .gz handling, so load_nii_hdr was given
+   %  a ".nii.gz" name and mangled it into ".gz.nii". Unpack to a temp folder first,
+   %  the same way the upstream toolbox does, and clean up before returning.
+   gz_tmpdir = '';
+   if length(filename) > 7 && strcmp(filename(end-6:end), '.nii.gz')
+      gz_tmpdir = tempname;
+      mkdir(gz_tmpdir);
+      filename = char(gunzip(filename, gz_tmpdir));
+   end
+
    if ~exist('img_idx','var') | isempty(img_idx)
       img_idx = [];
    end
@@ -93,7 +103,10 @@ function nii = load_untouch_nii(filename, img_idx, dim5_idx, dim6_idx, dim7_idx)
 
    %  Read the dataset body
    %
-   [nii.img,nii.hdr] = load_nii_img(nii.hdr,nii.filetype,nii.fileprefix, ...
+   %  CHANGED FOR WRAPPER: this called load_nii_img, which is not shipped in this
+   %  folder. load_untouch_nii_img is the matching helper (same signature) and is
+   %  what the upstream toolbox calls from load_untouch_nii.
+   [nii.img,nii.hdr] = load_untouch_nii_img(nii.hdr,nii.filetype,nii.fileprefix, ...
 		nii.machine,img_idx,dim5_idx,dim6_idx,dim7_idx);
 
    %  Perform some of sform/qform transform
@@ -101,6 +114,10 @@ function nii = load_untouch_nii(filename, img_idx, dim5_idx, dim6_idx, dim7_idx)
 %   nii = xform_nii(nii, tolerance, preferredForm);
 
    nii.untouch = 1;
+
+   if ~isempty(gz_tmpdir)
+      rmdir(gz_tmpdir, 's');
+   end
 
    return					% load_untouch_nii
 
